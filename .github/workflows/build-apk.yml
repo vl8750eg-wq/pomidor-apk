@@ -18,7 +18,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - run: pip install flet
+          flutter-version: '3.44.8'
+      - run: pip install flet==0.86.5
       - run: flet build apk --verbose
       - uses: actions/upload-artifact@v4
         with:
