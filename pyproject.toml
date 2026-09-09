@@ -14,5 +14,5 @@ icon = "assets/icon.png"
 splash_color = "#0F1115"
 
 [tool.flet.android]
-min_sdk_version = 21
+min_sdk_version = 23
 target_sdk_version = 34
