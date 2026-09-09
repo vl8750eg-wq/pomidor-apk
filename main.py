@@ -1,4 +1,5 @@
 import asyncio
+import json
 import flet as ft
 
 ACCENT = "#FF5C5C"
@@ -47,31 +48,19 @@ def main(page: ft.Page):
     except:
         pass
     st = State()
-    try:
-        c = page.client_storage
-        v = c.get("pomidor_cfg")
-        if isinstance(v, dict):
-            for k in ("focus", "short", "long", "per_set"):
-                if k in v:
-                    try:
-                        setattr(st, k, max(1, int(v[k])))
-                    except:
-                        pass
-            for k in ("auto_break", "auto_focus", "sound"):
-                if k in v:
-                    setattr(st, k, bool(v[k]))
-    except:
-        pass
+    prefs = page.shared_preferences
+    hf = ft.HapticFeedback()
+    page.overlay.append(hf)
     st.remaining = st.focus * 60
     st.total = st.remaining
 
     def save():
         try:
-            page.client_storage.set("pomidor_cfg", {
+            page.run_task(prefs.set, "pomidor_cfg", json.dumps({
                 "focus": st.focus, "short": st.short, "long": st.long,
                 "per_set": st.per_set, "auto_break": st.auto_break,
                 "auto_focus": st.auto_focus, "sound": st.sound,
-            })
+            }))
         except:
             pass
 
@@ -94,8 +83,11 @@ def main(page: ft.Page):
         tab_btns[key] = b
         tab_row.controls.append(b)
 
-    def num_field(label, initial, lo, hi, on_change):
+    field_refs = {}
+
+    def num_field(key, label, initial, lo, hi, on_change):
         tf = ft.TextField(label=label, value=str(initial), width=110, text_align=ft.TextAlign.CENTER, keyboard_type=ft.KeyboardType.NUMBER)
+        field_refs[key] = tf
         def minus(e):
             try:
                 v = max(lo, min(hi, int(tf.value or initial) - 1))
@@ -159,7 +151,7 @@ def main(page: ft.Page):
     overlay_state = ft.Text("", size=14, weight=ft.FontWeight.BOLD, color="#FFE082", text_align=ft.TextAlign.CENTER)
     overlay_btn = ft.ElevatedButton("ПОНЯТНО, ПРОДОЛЖИТЬ  →", height=58)
     overlay_col = ft.Column([overlay_emoji, overlay_title, overlay_sub, overlay_state, ft.Container(height=10), overlay_btn], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8, expand=True)
-    overlay.content = ft.Container(overlay_col, padding=24, alignment=ft.alignment.center)
+    overlay.content = ft.Container(overlay_col, padding=24, alignment=ft.Alignment(0, 0))
 
     def hide_overlay(e=None):
         overlay.visible = False
@@ -176,7 +168,7 @@ def main(page: ft.Page):
         overlay.visible = True
         page.update()
         try:
-            page.vibrate(duration=400)
+            page.run_task(hf.vibrate)
         except:
             pass
 
@@ -184,7 +176,7 @@ def main(page: ft.Page):
         if not st.sound:
             return
         try:
-            page.vibrate(duration=600)
+            page.run_task(hf.vibrate)
         except:
             pass
 
@@ -333,8 +325,8 @@ def main(page: ft.Page):
         page.update()
 
     settings_grid = ft.Column([
-        ft.Row([num_field("Фокус", st.focus, 1, 120, set_focus), num_field("Отдых", st.short, 1, 60, set_short)], spacing=8),
-        ft.Row([num_field("Лонг", st.long, 5, 90, set_long), num_field("До лонга", st.per_set, 2, 8, set_per)], spacing=8),
+        ft.Row([num_field("focus", "Фокус", st.focus, 1, 120, set_focus), num_field("short", "Отдых", st.short, 1, 60, set_short)], spacing=8),
+        ft.Row([num_field("long", "Лонг", st.long, 5, 90, set_long), num_field("per_set", "До лонга", st.per_set, 2, 8, set_per)], spacing=8),
         ft.Row([ft.Text("Автостарт отдыха", expand=True), sw_break]),
         ft.Row([ft.Text("Автостарт фокуса", expand=True), sw_focus]),
         ft.Row([ft.Text("Вибрация/звук", expand=True), sw_sound]),
@@ -344,7 +336,7 @@ def main(page: ft.Page):
         ft.Container(ft.Row([ft.Text("🍅  POMIDOR", size=18, weight=ft.FontWeight.BOLD), fire_label], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.padding.only(left=20, right=20, top=16)),
         ft.Container(ft.Text("4 помидора → большой перерыв • отдых и фокус стартуют сами", size=11, color=MUTED), padding=ft.padding.only(left=20, right=20)),
         ft.Container(tab_row, padding=ft.padding.only(left=16, right=16, top=10)),
-        ft.Container(ft.Column([set_label, mode_label, ft.Stack([ft.Container(ring, alignment=ft.alignment.center, padding=10), ft.Container(title_time, alignment=ft.alignment.center, padding=ft.padding.only(top=52))], height=230), dots_label], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER), bgcolor=CARD, border_radius=20, padding=14, margin=ft.margin.only(left=16, right=16, top=10)),
+        ft.Container(ft.Column([set_label, mode_label, ft.Stack([ft.Container(ring, alignment=ft.Alignment(0, 0), padding=10), ft.Container(title_time, alignment=ft.Alignment(0, 0), padding=ft.padding.only(top=52))], height=230), dots_label], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER), bgcolor=CARD, border_radius=20, padding=14, margin=ft.margin.only(left=16, right=16, top=10)),
         ft.Container(main_btn, padding=ft.padding.only(left=16, right=16, top=10)),
         ft.Container(ft.Row([reset_btn, skip_btn], spacing=8), padding=ft.padding.only(left=16, right=16)),
         ft.Container(ft.Column([ft.Text("НАСТРОЙКИ ВРЕМЕНИ", size=11, weight=ft.FontWeight.BOLD, color=MUTED), settings_grid], spacing=8), bgcolor=CARD, border_radius=20, padding=14, margin=ft.margin.only(left=16, right=16, top=10)),
@@ -355,6 +347,38 @@ def main(page: ft.Page):
     refresh()
     page.update()
     page.run_task(loop)
+    page.run_task(load_prefs)
+
+    async def load_prefs():
+        try:
+            raw = await prefs.get("pomidor_cfg")
+            if not isinstance(raw, str):
+                return
+            d = json.loads(raw)
+            for k in ("focus", "short", "long", "per_set"):
+                if k in d:
+                    try:
+                        setattr(st, k, max(1, int(d[k])))
+                    except:
+                        pass
+            for k in ("auto_break", "auto_focus", "sound"):
+                if k in d:
+                    setattr(st, k, bool(d[k]))
+            for k in ("focus", "short", "long", "per_set"):
+                try:
+                    field_refs[k].value = str(getattr(st, k))
+                except:
+                    pass
+            sw_break.value = st.auto_break
+            sw_focus.value = st.auto_focus
+            sw_sound.value = st.sound
+            if not st.running:
+                st.total = {"focus": st.focus, "short": st.short, "long": st.long}[st.mode] * 60
+                st.remaining = st.total
+            refresh()
+            page.update()
+        except:
+            pass
 
 if __name__ == "__main__":
     ft.app(main)
