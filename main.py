@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import flet as ft
 
@@ -60,6 +61,9 @@ def main(page: ft.Page):
                 "focus": st.focus, "short": st.short, "long": st.long,
                 "per_set": st.per_set, "auto_break": st.auto_break,
                 "auto_focus": st.auto_focus, "sound": st.sound,
+                "in_set": st.in_set, "total_done": st.total_done,
+                "focus_minutes": st.focus_minutes,
+                "stat_date": datetime.date.today().isoformat(),
             }))
         except:
             pass
@@ -246,6 +250,7 @@ def main(page: ft.Page):
         else:
             status_label.value = f"Далее: {MODES[nxt]['title']}. Жми старт."
         refresh()
+        save()
         if not silent:
             buzz(nxt)
             nd = {"focus": st.focus, "short": st.short, "long": st.long}[nxt]
@@ -369,6 +374,16 @@ def main(page: ft.Page):
                     field_refs[k].value = str(getattr(st, k))
                 except:
                     pass
+            try:
+                st.in_set = max(0, int(d.get("in_set", 0)))
+            except:
+                pass
+            if d.get("stat_date") == datetime.date.today().isoformat():
+                for k in ("total_done", "focus_minutes"):
+                    try:
+                        setattr(st, k, max(0, int(d.get(k, 0))))
+                    except:
+                        pass
             sw_break.value = st.auto_break
             sw_focus.value = st.auto_focus
             sw_sound.value = st.sound
