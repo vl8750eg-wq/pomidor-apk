@@ -1,0 +1,18 @@
+[project]
+name = "pomidor"
+version = "1.0.0"
+description = "Pomidor focus timer"
+requires-python = ">=3.10"
+dependencies = ["flet>=0.28.0"]
+
+[tool.flet]
+org = "com.pomidor"
+company = "Pomidor"
+product = "Pomidor"
+package = "com.pomidor.app"
+icon = "assets/icon.png"
+splash_color = "#0F1115"
+
+[tool.flet.android]
+min_sdk_version = 21
+target_sdk_version = 34
