@@ -202,7 +202,7 @@ def main(page: ft.Page):
         set_label.value = f"СЕТ {min(st.in_set + 1, per) if st.mode == 'focus' else (st.in_set or per)}/{per}  •  ПОМИДОР {cur}"
         fire_label.value = f"🔥 {st.total_done}"
         stat_label.value = f"Сегодня: {st.total_done} 🍅   •   Фокуса: {st.focus_minutes} мин"
-        main_btn.text = "⏸   ПАУЗА" if st.running else "▶   СТАРТ"
+        main_btn.content = "⏸   ПАУЗА" if st.running else "▶   СТАРТ"
         try:
             page.title = f"{fmt(st.remaining)} • {meta['title']} | Pomidor"
         except:
@@ -338,21 +338,15 @@ def main(page: ft.Page):
     ], spacing=8)
 
     body = ft.Column([
-        ft.Container(ft.Row([ft.Text("🍅  POMIDOR", size=18, weight=ft.FontWeight.BOLD), fire_label], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.padding.only(left=20, right=20, top=16)),
-        ft.Container(ft.Text("4 помидора → большой перерыв • отдых и фокус стартуют сами", size=11, color=MUTED), padding=ft.padding.only(left=20, right=20)),
-        ft.Container(tab_row, padding=ft.padding.only(left=16, right=16, top=10)),
-        ft.Container(ft.Column([set_label, mode_label, ft.Stack([ft.Container(ring, alignment=ft.Alignment(0, 0), padding=10), ft.Container(title_time, alignment=ft.Alignment(0, 0), padding=ft.padding.only(top=52))], height=230), dots_label], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER), bgcolor=CARD, border_radius=20, padding=14, margin=ft.margin.only(left=16, right=16, top=10)),
-        ft.Container(main_btn, padding=ft.padding.only(left=16, right=16, top=10)),
-        ft.Container(ft.Row([reset_btn, skip_btn], spacing=8), padding=ft.padding.only(left=16, right=16)),
-        ft.Container(ft.Column([ft.Text("НАСТРОЙКИ ВРЕМЕНИ", size=11, weight=ft.FontWeight.BOLD, color=MUTED), settings_grid], spacing=8), bgcolor=CARD, border_radius=20, padding=14, margin=ft.margin.only(left=16, right=16, top=10)),
-        ft.Container(ft.Column([stat_label, status_label], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4), padding=ft.padding.only(left=20, right=20, top=10, bottom=30)),
+        ft.Container(ft.Row([ft.Text("🍅  POMIDOR", size=18, weight=ft.FontWeight.BOLD), fire_label], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.Padding.only(left=20, right=20, top=16)),
+        ft.Container(ft.Text("4 помидора → большой перерыв • отдых и фокус стартуют сами", size=11, color=MUTED), padding=ft.Padding.only(left=20, right=20)),
+        ft.Container(tab_row, padding=ft.Padding.only(left=16, right=16, top=10)),
+        ft.Container(ft.Column([set_label, mode_label, ft.Stack([ft.Container(ring, alignment=ft.Alignment(0, 0), padding=10), ft.Container(title_time, alignment=ft.Alignment(0, 0), padding=ft.Padding.only(top=52))], height=230), dots_label], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER), bgcolor=CARD, border_radius=20, padding=14, margin=ft.Margin.only(left=16, right=16, top=10)),
+        ft.Container(main_btn, padding=ft.Padding.only(left=16, right=16, top=10)),
+        ft.Container(ft.Row([reset_btn, skip_btn], spacing=8), padding=ft.Padding.only(left=16, right=16)),
+        ft.Container(ft.Column([ft.Text("НАСТРОЙКИ ВРЕМЕНИ", size=11, weight=ft.FontWeight.BOLD, color=MUTED), settings_grid], spacing=8), bgcolor=CARD, border_radius=20, padding=14, margin=ft.Margin.only(left=16, right=16, top=10)),
+        ft.Container(ft.Column([stat_label, status_label], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4), padding=ft.Padding.only(left=20, right=20, top=10, bottom=30)),
     ], scroll=ft.ScrollMode.AUTO, expand=True)
-
-    page.add(ft.Stack([body, overlay], expand=True))
-    refresh()
-    page.update()
-    page.run_task(loop)
-    page.run_task(load_prefs)
 
     async def load_prefs():
         try:
@@ -394,6 +388,12 @@ def main(page: ft.Page):
             page.update()
         except:
             pass
+
+    page.add(ft.Stack([body, overlay], expand=True))
+    refresh()
+    page.update()
+    page.run_task(loop)
+    page.run_task(load_prefs)
 
 if __name__ == "__main__":
     ft.app(main)
