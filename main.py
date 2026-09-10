@@ -21,7 +21,6 @@ MODES = {
 
 # Каталог данных приложения (на Android задаётся рантаймом Flet).
 DATA_DIR = os.environ.get("FLET_APP_STORAGE_DATA") or "."
-CMD_FILE = os.path.join(DATA_DIR, "pomidor_cmd.json")
 ACK_FILE = os.path.join(DATA_DIR, "pomidor_ack.json")
 STATE_FILE = os.path.join(DATA_DIR, "pomidor_state.json")
 
@@ -72,70 +71,83 @@ def main(page: ft.Page):
         return {"focus": st.focus, "short": st.short, "long": st.long}[mode or st.mode] * 60
 
     # ------------------------------------------------------------------
-    # Нативный мост: Python → файл → Dart (poll 400ms) → Kotlin.
-    # Kotlin ставит ТОЧНЫЙ системный будильник (AlarmManager.setAlarmClock)
-    # и показывает full-screen уведомление поверх всего экрана в дедлайн —
-    # работает даже если процесс приложения заморожен или убит системой.
+    # Нативный мост v1.0.4 (Kotlin-центричный): Python пишет ПОЛНЫЙ снимок
+    # состояния таймера в pomidor_state.json. MainActivity на Android сам
+    # опрашивает этот файл каждые 0.7 с, пока приложение на экране, и ставит
+    # ТОЧНЫЙ системный будильник (AlarmManager.setAlarmClock). В дедлайн
+    # система запускает AlarmActivity ПОВЕРХ ВСЕХ ОКОН и лоскрина — со звуком
+    # и вибрацией, даже если уведомления запрещены и процесс убит. Автофазы
+    # (отдых/фокус) заранее считаются в поле "next": Kotlin перевзводит
+    # будильник сам, без Python. Статус службы — в pomidor_ack.json.
     # ------------------------------------------------------------------
-    _cmd_seq = [0]
-    _pending = {}
-    _flush_task = [None]
+    _gen = [str(time.time_ns())]
+    _last_state_write = [0.0]
 
-    def _new_cmd_id():
-        _cmd_seq[0] += 1
-        return f"{int(time.time() * 1000)}-{_cmd_seq[0]}"
+    def _next_gen():
+        _gen[0] = str(time.time_ns())
+        return _gen[0]
 
-    def send_cmd(**fields):
-        # Команды, вспыхнувшие в пределах 0.45 с, сливаются в одну запись:
-        # Dart выполняет каждую запись файла ровно один раз (по id).
-        _pending.update(fields)
-        if _flush_task[0] is None or _flush_task[0].done():
-            _flush_task[0] = page.run_task(_flush_cmd)
+    def mode_alarm_title(mode):
+        m = MODES[mode]
+        return f"{m['emoji']} {m['title'].upper()} — ВРЕМЯ ВЫШЛО!"
 
-    async def _flush_cmd():
-        await asyncio.sleep(0.45)
-        if not _pending:
-            return
-        payload = {"id": _new_cmd_id()}
-        payload.update(_pending)
-        _pending.clear()
-        try:
-            with open(CMD_FILE, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-    def write_state(alarm):
-        """Снимок активного будильника для BootReceiver (перезагрузка телефона)."""
-        try:
-            d = {"active": bool(alarm)}
-            if alarm:
-                d.update(alarm)
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(d, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-    def alarm_payload():
-        end_clock = datetime.datetime.fromtimestamp(st.ends_at).strftime("%H:%M")
+    def next_phase_payload():
+        """Фаза, которая автостартует сразу после текущей (цепочка Kotlin)."""
+        per = max(2, st.per_set)
+        if st.mode == "focus":
+            is_long = (st.in_set + 1) % per == 0
+            nxt = "long" if is_long else "short"
+        else:
+            nxt = "focus"
+        auto = (nxt in ("short", "long") and st.auto_break) or (nxt == "focus" and st.auto_focus)
+        if not auto:
+            return {"active": False}
+        m = MODES[nxt]
+        end_clock = datetime.datetime.fromtimestamp(st.ends_at + dur(nxt)).strftime("%H:%M")
         return {
-            "ts_ms": int(st.ends_at * 1000),
-            "title": f"{MODES[st.mode]['emoji']} {MODES[st.mode]['title'].upper()} — ВРЕМЯ ВЫШЛО!",
-            "body": f"Таймер «{MODES[st.mode]['title']}» завершился в {end_clock}",
+            "active": True,
+            "ts_ms": int((st.ends_at + dur(nxt)) * 1000),
+            "title": mode_alarm_title(nxt),
+            "body": f"Фаза «{m['title']}» завершится в {end_clock}",
             "sound": bool(st.sound),
             "vibro": bool(st.vibro),
         }
 
+    def write_state(active=None, act=None, act_until=0):
+        """Снимок состояния для нативной службы: Kotlin сам решает, ставить ли
+        будильник, сверяясь с полем gen (каждая запись уникальна)."""
+        try:
+            run = bool(st.running) if active is None else bool(active)
+            p = {"gen": _next_gen()}
+            if run and st.ends_at > 0:
+                end_clock = datetime.datetime.fromtimestamp(st.ends_at).strftime("%H:%M")
+                p.update({
+                    "active": True,
+                    "ts_ms": int(st.ends_at * 1000),
+                    "title": mode_alarm_title(st.mode),
+                    "body": f"Таймер «{MODES[st.mode]['title']}» завершился в {end_clock}",
+                    "sound": bool(st.sound),
+                    "vibro": bool(st.vibro),
+                    "next": next_phase_payload(),
+                })
+            else:
+                p.update({"active": False, "ts_ms": 0, "next": {"active": False}})
+            if act:
+                p["act"] = act
+                if act_until:
+                    p["act_until"] = int(act_until)
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(p, f, ensure_ascii=False)
+            _last_state_write[0] = time.time()
+        except Exception:
+            pass
+
     def schedule_alarm():
-        """Ставит системный будильник на дедлайн текущей фазы."""
         if st.running and st.ends_at > 0:
-            p = alarm_payload()
-            send_cmd(alarm=p)
-            write_state(p)
+            write_state()
 
     def cancel_alarm():
-        send_cmd(cancel=True, dismiss=True, stop=True)
-        write_state(None)
+        write_state(active=False)
 
     # ------------------------------------------------------------------
     # Конфиг
@@ -253,6 +265,44 @@ def main(page: ft.Page):
 
     notif_label = ft.Text("", size=11, color=MUTED)
 
+    # Баннер состояния службы будильника (виден только при проблемах).
+    banner = ft.Container(visible=False, bgcolor="#7A1B1B", border_radius=12, padding=12, margin=ft.Margin.only(left=16, right=16, top=8))
+    banner_text = ft.Text("", size=12, color="white", text_align=ft.TextAlign.CENTER)
+    banner_state = {"kind": None}
+
+    def open_notif_settings(e=None):
+        write_state(act="settings")
+
+    def run_test(e=None):
+        write_state(act="test")
+        notif_label.value = "🔔 Тест поставлен: сверни приложение — через ~15 с сработает будильник."
+        notif_label.color = GOLD
+        try:
+            notif_label.update()
+        except Exception:
+            page.update()
+
+    banner.content = ft.Column([
+        banner_text,
+        ft.Row([
+            ft.Button("Настройки уведомлений", height=38, expand=True, on_click=open_notif_settings),
+            ft.Button("Тест 15 с", height=38, expand=True, on_click=run_test),
+        ], spacing=8),
+    ], spacing=6)
+
+    def set_banner(kind, text):
+        banner_state["kind"] = kind
+        if kind is None:
+            banner.visible = False
+        else:
+            banner.bgcolor = "#7A1B1B" if kind == "perm" else "#7A621B"
+            banner_text.value = text
+            banner.visible = True
+        try:
+            page.update()
+        except Exception:
+            pass
+
     overlay = ft.Container(visible=False, bgcolor="#B71C1C", opacity=1.0, left=0, top=0, right=0, bottom=0)
     overlay_emoji = ft.Text("🍅", size=110, text_align=ft.TextAlign.CENTER)
     overlay_title = ft.Text("", size=34, weight=ft.FontWeight.BOLD, color="white", text_align=ft.TextAlign.CENTER)
@@ -264,8 +314,7 @@ def main(page: ft.Page):
 
     def hide_overlay(e=None):
         overlay.visible = False
-        # выключить звук будильника и убрать уведомление из шторки
-        send_cmd(stop=True, dismiss=True)
+        write_state(act="stop")  # глушит нативный звук будильника
         page.update()
 
     overlay_btn.on_click = hide_overlay
@@ -323,11 +372,6 @@ def main(page: ft.Page):
             except:
                 pass
 
-    async def _late_dismiss():
-        # уведомление системы появляется чуть позже нуля — убираем его с запасом
-        await asyncio.sleep(15)
-        send_cmd(dismiss=True)
-
     def do_finish(silent=False):
         per = max(2, st.per_set)
         if st.mode == "focus":
@@ -369,18 +413,13 @@ def main(page: ft.Page):
             status_label.value = f"Далее: {MODES[nxt]['title']}. Жми старт."
         refresh()
         save()
-        if auto:
-            schedule_alarm()  # будильник на следующую фазу (сольётся с play/dismiss ниже)
+        if not silent and st.sound:
+            # один снимок: будильник следующей фазы + команда «звук сейчас»
+            write_state(act="play", act_until=int((time.time() + 90) * 1000))
         else:
-            cancel_alarm()
+            write_state()
         if not silent:
             buzz(nxt)
-            if st.sound:
-                send_cmd(play=True, until=int((time.time() + 90) * 1000))
-            try:
-                page.run_task(_late_dismiss)
-            except Exception:
-                pass
             nd = dur(nxt) // 60
             state_t = f"Далее: {MODES[nxt]['title']} {nd} мин — уже запущен ▶" if auto else f"Далее: {MODES[nxt]['title']} {nd} мин — на паузе"
             show_overlay(title, sub, emoji, bgc, state_t)
@@ -479,12 +518,14 @@ def main(page: ft.Page):
         ft.Row([ft.Text("Автостарт фокуса", expand=True), sw_focus]),
         ft.Row([ft.Text("🔊 Звук будильника", expand=True), sw_sound]),
         ft.Row([ft.Text("📳 Вибрация", expand=True), sw_vibro]),
+        ft.Row([ft.Button("🔔 Тест будильника (15 с)", height=44, expand=True, on_click=run_test)]),
         ft.Container(notif_label, padding=ft.Padding.only(top=2)),
     ], spacing=8)
 
     body = ft.Column([
         ft.Container(ft.Row([ft.Text("🍅  POMIDOR", size=18, weight=ft.FontWeight.BOLD), fire_label], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.Padding.only(left=20, right=20, top=16)),
         ft.Container(ft.Text("4 помидора → большой перерыв • будильник сработает даже в фоне", size=11, color=MUTED), padding=ft.Padding.only(left=20, right=20)),
+        banner,
         ft.Container(tab_row, padding=ft.Padding.only(left=16, right=16, top=10)),
         ft.Container(ft.Column([set_label, mode_label, ft.Stack([ft.Container(ring, alignment=ft.Alignment(0, 0), padding=10), ft.Container(title_time, alignment=ft.Alignment(0, 0), padding=ft.Padding.only(top=52))], height=230), dots_label], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER), bgcolor=CARD, border_radius=20, padding=14, margin=ft.Margin.only(left=16, right=16, top=10)),
         ft.Container(main_btn, padding=ft.Padding.only(left=16, right=16, top=10)),
@@ -497,7 +538,7 @@ def main(page: ft.Page):
         try:
             raw = await prefs.get("pomidor_cfg")
             if not isinstance(raw, str):
-                send_cmd(perm=True, check=True)
+                write_state()  # первый запуск: пустой снимок → Kotlin ack со статусом разрешений
                 return
             d = json.loads(raw)
             for k in ("focus", "short", "long", "per_set"):
@@ -566,45 +607,64 @@ def main(page: ft.Page):
                 st.left = min(rl, st.total)
                 st.running = False
                 st.ends_at = 0.0
+                write_state(active=False)  # снимок «всё снято» после восстановления паузы
             refresh()
             page.update()
-            send_cmd(perm=True, check=True)
         except Exception:
-            send_cmd(perm=True, check=True)
+            write_state()
 
     async def ack_loop():
-        """Читает ack-файл от Dart/Kotlin и показывает статус уведомлений в настройках."""
+        """Читает ack-файл нативной службы и ведёт баннер/статус в UI."""
         seen = ""
         while True:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
+            a = None
             try:
                 with open(ACK_FILE, "r", encoding="utf-8") as f:
                     a = json.load(f)
-                if not isinstance(a, dict):
-                    continue
-                aid = str(a.get("id") or "")
-                if not aid or aid == seen:
-                    continue
-                seen = aid
-                if a.get("ok") is False and a.get("error"):
-                    notif_label.value = f"🔔 Будильник: нативная ошибка — {a.get('error')}"
-                    notif_label.color = "#FF8A80"
-                elif a.get("notif") is False:
-                    notif_label.value = "🔔 Нет разрешения на уведомления — включите Pomidor в настройках Android, чтобы будильник срабатывал в фоне"
-                    notif_label.color = "#FF8A80"
-                elif a.get("notif") is True:
-                    ex = "да" if a.get("exact") else "по возможности"
-                    notif_label.value = f"🔔 Уведомления: разрешены • точный будильник: {ex}"
-                    notif_label.color = MUTED
-                else:
-                    continue
-                refresh()
-                try:
-                    notif_label.update()
-                except Exception:
-                    page.update()
             except Exception:
-                pass
+                a = None
+            if isinstance(a, dict):
+                aid = str(a.get("id") or "")
+                if aid and aid != seen:
+                    seen = aid
+                    if a.get("ok") is False and a.get("error"):
+                        notif_label.value = f"🔔 Служба будильника: ошибка — {a.get('error')}"
+                        notif_label.color = "#FF8A80"
+                    elif a.get("act") == "settings":
+                        notif_label.value = "🔔 Открыты настройки уведомлений Android."
+                        notif_label.color = MUTED
+                    elif a.get("armed"):
+                        try:
+                            at = datetime.datetime.fromtimestamp(int(a.get("armed")) / 1000).strftime("%H:%M")
+                        except Exception:
+                            at = "?"
+                        ex = ", точный" if a.get("exact") else ""
+                        notif_label.value = f"🔔 Системный будильник: сработает в {at}{ex}"
+                        notif_label.color = MUTED
+                    else:
+                        notif_label.value = "🔔 Будильник снят"
+                        notif_label.color = MUTED
+                # баннер: разрешение на уведомления (Kotlin проверяет сам)
+                if a.get("notif") is False:
+                    if banner_state["kind"] != "perm":
+                        set_banner("perm", "Уведомления запрещены — в фоне не будет ни звука, ни вибрации. Разреши уведомления для Pomidor:")
+                elif banner_state["kind"] == "perm":
+                    set_banner(None, "")
+            # таймер идёт, но служба не подтвердила последний снимок
+            if (st.running and _last_state_write[0] > 0
+                    and time.time() - _last_state_write[0] > 6 and seen != _gen[0]):
+                if banner_state["kind"] is None:
+                    set_banner("stale", "Служба будильника не отвечает. Полностью закрой и снова открой приложение.")
+            elif banner_state["kind"] == "stale":
+                set_banner(None, "")
+            try:
+                notif_label.update()
+            except Exception:
+                try:
+                    page.update()
+                except Exception:
+                    pass
 
     page.add(ft.Stack([body, overlay], expand=True))
     refresh()

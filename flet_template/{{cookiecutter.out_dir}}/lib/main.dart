@@ -24,10 +24,6 @@ import 'native_runtime_stub.dart'
 // so that main.dart stays plain, editable Dart.
 import 'flet_generated.dart';
 
-// Pomidor: native alarm bridge (polls Python command file, calls Kotlin
-// AlarmManager / full-screen notifications via `pomidor/native` channel).
-import 'pomidor_bridge.dart';
-
 const bool isRelease = bool.fromEnvironment('dart.vm.product');
 
 // Drives the boot screen before any FletBackend exists. Seeded to `startingUp`
@@ -370,9 +366,6 @@ Future prepareApp() async {
       await Directory(appDataPath).create(recursive: true);
     }
     Directory.current = appDataPath;
-
-    // Pomidor: start the native alarm bridge (Android only, no-op elsewhere).
-    unawaited(startPomidorBridge());
 
     // FLET_APP_STORAGE_CACHE — regenerable; the OS may purge it.
     var appCachePath = (await path_provider.getApplicationCacheDirectory()).path;

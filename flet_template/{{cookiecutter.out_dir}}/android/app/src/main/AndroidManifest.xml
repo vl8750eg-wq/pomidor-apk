@@ -57,8 +57,18 @@
             </intent-filter>
             <!-- flet: end of deep linking {% endif %} -->
         </activity>
-        <!-- Pomidor: alarm receivers (full-screen alarm notification + reboot reschedule) -->
-        <receiver android:name=".AlarmReceiver" android:exported="false" />
+        <!-- Pomidor: full-screen alarm activity (launched by the system alarm
+             clock operation; covers the lock screen and any other app even
+             when notifications are blocked) + reboot reschedule receiver -->
+        <activity
+            android:name=".AlarmActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/AlarmTheme" />
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
