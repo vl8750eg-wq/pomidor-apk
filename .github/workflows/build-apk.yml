@@ -3,6 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['v*']
+permissions:
+  contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -25,3 +28,9 @@ jobs:
         with:
           name: pomidor-apk
           path: build/apk/**/*.apk
+      - name: Create GitHub Release with APKs
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/apk/**/*.apk
+          generate_release_notes: true
