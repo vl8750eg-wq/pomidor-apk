@@ -1,6 +1,6 @@
 [project]
 name = "pomidor"
-version = "1.0.2"
+version = "1.0.3"
 description = "Pomidor focus timer"
 requires-python = ">=3.10"
 dependencies = ["flet>=0.28.0"]
@@ -16,3 +16,10 @@ splash_color = "#0F1115"
 [tool.flet.android]
 min_sdk_version = 24
 target_sdk_version = 34
+
+[tool.flet.android.permission]
+"android.permission.POST_NOTIFICATIONS" = true
+"android.permission.VIBRATE" = true
+"android.permission.RECEIVE_BOOT_COMPLETED" = true
+"android.permission.USE_FULL_SCREEN_INTENT" = true
+"android.permission.WAKE_LOCK" = true

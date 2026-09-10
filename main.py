@@ -1,6 +1,8 @@
 import asyncio
 import datetime
 import json
+import os
+import time
 import flet as ft
 
 ACCENT = "#FF5C5C"
@@ -17,11 +19,19 @@ MODES = {
     "long": {"title": "Большой перерыв", "color": BLUE, "emoji": "🌴"},
 }
 
+# Каталог данных приложения (на Android задаётся рантаймом Flet).
+DATA_DIR = os.environ.get("FLET_APP_STORAGE_DATA") or "."
+CMD_FILE = os.path.join(DATA_DIR, "pomidor_cmd.json")
+ACK_FILE = os.path.join(DATA_DIR, "pomidor_ack.json")
+STATE_FILE = os.path.join(DATA_DIR, "pomidor_state.json")
+
+
 class State:
     def __init__(self):
         self.mode = "focus"
-        self.remaining = 25 * 60
-        self.total = 25 * 60
+        self.left = 25 * 60          # остаток фазы в секундах (когда таймер стоит)
+        self.total = 25 * 60         # длительность текущей фазы
+        self.ends_at = 0.0           # дедлайн по настенным часам (когда таймер идёт)
         self.running = False
         self.in_set = 0
         self.total_done = 0
@@ -33,10 +43,13 @@ class State:
         self.auto_break = True
         self.auto_focus = True
         self.sound = True
+        self.vibro = True
+
 
 def fmt(s):
     s = max(0, int(s))
     return f"{s // 60:02d}:{s % 60:02d}"
+
 
 def main(page: ft.Page):
     page.title = "Pomidor"
@@ -52,23 +65,105 @@ def main(page: ft.Page):
     prefs = page.shared_preferences
     hf = ft.HapticFeedback()
     page.services.append(hf)  # в новом API HapticFeedback — Service, а не визуальный контрол
-    st.remaining = st.focus * 60
-    st.total = st.remaining
+    st.left = st.focus * 60
+    st.total = st.left
 
+    def dur(mode=None):
+        return {"focus": st.focus, "short": st.short, "long": st.long}[mode or st.mode] * 60
+
+    # ------------------------------------------------------------------
+    # Нативный мост: Python → файл → Dart (poll 400ms) → Kotlin.
+    # Kotlin ставит ТОЧНЫЙ системный будильник (AlarmManager.setAlarmClock)
+    # и показывает full-screen уведомление поверх всего экрана в дедлайн —
+    # работает даже если процесс приложения заморожен или убит системой.
+    # ------------------------------------------------------------------
+    _cmd_seq = [0]
+    _pending = {}
+    _flush_task = [None]
+
+    def _new_cmd_id():
+        _cmd_seq[0] += 1
+        return f"{int(time.time() * 1000)}-{_cmd_seq[0]}"
+
+    def send_cmd(**fields):
+        # Команды, вспыхнувшие в пределах 0.45 с, сливаются в одну запись:
+        # Dart выполняет каждую запись файла ровно один раз (по id).
+        _pending.update(fields)
+        if _flush_task[0] is None or _flush_task[0].done():
+            _flush_task[0] = page.run_task(_flush_cmd)
+
+    async def _flush_cmd():
+        await asyncio.sleep(0.45)
+        if not _pending:
+            return
+        payload = {"id": _new_cmd_id()}
+        payload.update(_pending)
+        _pending.clear()
+        try:
+            with open(CMD_FILE, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def write_state(alarm):
+        """Снимок активного будильника для BootReceiver (перезагрузка телефона)."""
+        try:
+            d = {"active": bool(alarm)}
+            if alarm:
+                d.update(alarm)
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def alarm_payload():
+        end_clock = datetime.datetime.fromtimestamp(st.ends_at).strftime("%H:%M")
+        return {
+            "ts_ms": int(st.ends_at * 1000),
+            "title": f"{MODES[st.mode]['emoji']} {MODES[st.mode]['title'].upper()} — ВРЕМЯ ВЫШЛО!",
+            "body": f"Таймер «{MODES[st.mode]['title']}» завершился в {end_clock}",
+            "sound": bool(st.sound),
+            "vibro": bool(st.vibro),
+        }
+
+    def schedule_alarm():
+        """Ставит системный будильник на дедлайн текущей фазы."""
+        if st.running and st.ends_at > 0:
+            p = alarm_payload()
+            send_cmd(alarm=p)
+            write_state(p)
+
+    def cancel_alarm():
+        send_cmd(cancel=True, dismiss=True, stop=True)
+        write_state(None)
+
+    # ------------------------------------------------------------------
+    # Конфиг
+    # ------------------------------------------------------------------
     def save():
         try:
             page.run_task(prefs.set, "pomidor_cfg", json.dumps({
                 "focus": st.focus, "short": st.short, "long": st.long,
                 "per_set": st.per_set, "auto_break": st.auto_break,
                 "auto_focus": st.auto_focus, "sound": st.sound,
+                "vibro": st.vibro,
                 "in_set": st.in_set, "total_done": st.total_done,
                 "focus_minutes": st.focus_minutes,
                 "stat_date": datetime.date.today().isoformat(),
+                # состояние таймера — чтобы пережить убийство процесса
+                "run_active": bool(st.running),
+                "run_mode": st.mode if st.running else "",
+                "run_ends_at": st.ends_at if st.running else 0.0,
+                "run_left": (st.ends_at - time.time()) if st.running else st.left,
+                "run_total": st.total,
             }))
         except:
             pass
 
-    title_time = ft.Text(fmt(st.remaining), size=64, weight=ft.FontWeight.BOLD, color="white", text_align=ft.TextAlign.CENTER)
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+    title_time = ft.Text(fmt(st.left), size=64, weight=ft.FontWeight.BOLD, color="white", text_align=ft.TextAlign.CENTER)
     mode_label = ft.Text("ФОКУС", size=14, weight=ft.FontWeight.BOLD, color=ACCENT, text_align=ft.TextAlign.CENTER)
     set_label = ft.Text("", size=12, color=MUTED, text_align=ft.TextAlign.CENTER)
     dots_label = ft.Text("", size=22, text_align=ft.TextAlign.CENTER)
@@ -126,14 +221,14 @@ def main(page: ft.Page):
     def after_settings():
         save()
         if not st.running:
-            d = {"focus": st.focus, "short": st.short, "long": st.long}[st.mode] * 60
-            st.total = d
-            st.remaining = d
+            st.total = dur()
+            st.left = st.total
         refresh()
 
     sw_break = ft.Switch(value=st.auto_break)
     sw_focus = ft.Switch(value=st.auto_focus)
     sw_sound = ft.Switch(value=st.sound)
+    sw_vibro = ft.Switch(value=st.vibro)
 
     def on_sw_break(e):
         st.auto_break = bool(sw_break.value)
@@ -143,10 +238,20 @@ def main(page: ft.Page):
         save()
     def on_sw_sound(e):
         st.sound = bool(sw_sound.value)
+        if st.running:
+            schedule_alarm()  # перезаписать флаг звука уже поставленного будильника
+        save()
+    def on_sw_vibro(e):
+        st.vibro = bool(sw_vibro.value)
+        if st.running:
+            schedule_alarm()
         save()
     sw_break.on_change = on_sw_break
     sw_focus.on_change = on_sw_focus
     sw_sound.on_change = on_sw_sound
+    sw_vibro.on_change = on_sw_vibro
+
+    notif_label = ft.Text("", size=11, color=MUTED)
 
     overlay = ft.Container(visible=False, bgcolor="#B71C1C", opacity=1.0, left=0, top=0, right=0, bottom=0)
     overlay_emoji = ft.Text("🍅", size=110, text_align=ft.TextAlign.CENTER)
@@ -159,6 +264,8 @@ def main(page: ft.Page):
 
     def hide_overlay(e=None):
         overlay.visible = False
+        # выключить звук будильника и убрать уведомление из шторки
+        send_cmd(stop=True, dismiss=True)
         page.update()
 
     overlay_btn.on_click = hide_overlay
@@ -171,26 +278,29 @@ def main(page: ft.Page):
         overlay_state.value = state_text
         overlay.visible = True
         page.update()
-        try:
-            page.run_task(hf.vibrate)
-        except:
-            pass
 
-    def buzz(kind):
-        if not st.sound:
+    def buzz(kind=None):
+        if not st.vibro:
             return
+        async def _v():
+            for _ in range(3):
+                try:
+                    await hf.vibrate()
+                except Exception:
+                    return
+                await asyncio.sleep(0.8)
         try:
-            page.run_task(hf.vibrate)
-        except:
+            page.run_task(_v)
+        except Exception:
             pass
 
     def refresh():
         meta = MODES[st.mode]
-        title_time.value = fmt(st.remaining)
+        title_time.value = fmt(st.left)
         mode_label.value = meta["title"].upper()
         mode_label.color = meta["color"]
         ring.color = meta["color"]
-        ring.value = max(0.0, min(1.0, 1 - (st.remaining / st.total))) if st.total else 0
+        ring.value = max(0.0, min(1.0, 1 - (st.left / st.total))) if st.total else 0
         per = max(2, st.per_set)
         if st.mode == "long":
             dots_label.value = " ".join(["●"] * per)
@@ -204,7 +314,7 @@ def main(page: ft.Page):
         stat_label.value = f"Сегодня: {st.total_done} 🍅   •   Фокуса: {st.focus_minutes} мин"
         main_btn.content = "⏸   ПАУЗА" if st.running else "▶   СТАРТ"
         try:
-            page.title = f"{fmt(st.remaining)} • {meta['title']} | Pomidor"
+            page.title = f"{fmt(st.left)} • {meta['title']} | Pomidor"
         except:
             pass
         for k, b in tab_btns.items():
@@ -212,6 +322,11 @@ def main(page: ft.Page):
                 b.style = ft.ButtonStyle(bgcolor=CARD if k != st.mode else ACCENT, color="white" if k == st.mode else MUTED)
             except:
                 pass
+
+    async def _late_dismiss():
+        # уведомление системы появляется чуть позже нуля — убираем его с запасом
+        await asyncio.sleep(15)
+        send_cmd(dismiss=True)
 
     def do_finish(silent=False):
         per = max(2, st.per_set)
@@ -239,32 +354,53 @@ def main(page: ft.Page):
             bgc = "#1B7A43"
             emoji = "🚀"
         st.mode = nxt
-        st.total = {"focus": st.focus, "short": st.short, "long": st.long}[nxt] * 60
-        st.remaining = st.total
+        st.total = dur(nxt)
+        st.left = st.total
         st.running = False
+        st.ends_at = 0.0
         auto = (nxt in ("short", "long") and st.auto_break) or (nxt == "focus" and st.auto_focus)
-        refresh()
         if auto:
             st.running = True
+            st.ends_at = time.time() + st.left
+        refresh()
+        if auto:
             status_label.value = f"Автостарт: {MODES[nxt]['title']} уже идёт ▶"
         else:
             status_label.value = f"Далее: {MODES[nxt]['title']}. Жми старт."
         refresh()
         save()
+        if auto:
+            schedule_alarm()  # будильник на следующую фазу (сольётся с play/dismiss ниже)
+        else:
+            cancel_alarm()
         if not silent:
             buzz(nxt)
-            nd = {"focus": st.focus, "short": st.short, "long": st.long}[nxt]
+            if st.sound:
+                send_cmd(play=True, until=int((time.time() + 90) * 1000))
+            try:
+                page.run_task(_late_dismiss)
+            except Exception:
+                pass
+            nd = dur(nxt) // 60
             state_t = f"Далее: {MODES[nxt]['title']} {nd} мин — уже запущен ▶" if auto else f"Далее: {MODES[nxt]['title']} {nd} мин — на паузе"
             show_overlay(title, sub, emoji, bgc, state_t)
         page.update()
 
     async def loop():
+        last_sec = -1
         while True:
-            await asyncio.sleep(1)
-            if st.running:
-                st.remaining -= 1
-                if st.remaining <= 0:
-                    do_finish()
+            await asyncio.sleep(0.2)
+            if not st.running or st.ends_at <= 0:
+                continue
+            st.left = st.ends_at - time.time()
+            if st.left <= 0:
+                st.left = 0
+                do_finish()
+                last_sec = -1
+                continue
+            s = int(st.left)
+            if s != last_sec:
+                last_sec = s
                 refresh()
                 try:
                     page.update()
@@ -272,24 +408,30 @@ def main(page: ft.Page):
                     pass
 
     def toggle(e=None):
-        st.running = not st.running
-        if st.running:
-            d = {"focus": st.focus, "short": st.short, "long": st.long}[st.mode] * 60
-            if st.remaining <= 0:
-                st.remaining = d
-                st.total = d
+        if not st.running:
+            if st.left <= 0:
+                st.left = dur()
+                st.total = st.left
+            st.ends_at = time.time() + st.left
+            st.running = True
             status_label.value = "Таймер идёт… не отвлекайся 🍅"
+            schedule_alarm()
         else:
+            st.left = max(0.0, st.ends_at - time.time())
+            st.running = False
+            st.ends_at = 0.0
             status_label.value = "Пауза. Продолжай, когда будешь готов."
+            cancel_alarm()
         refresh()
         page.update()
 
     def reset_timer(e=None):
         st.running = False
-        d = {"focus": st.focus, "short": st.short, "long": st.long}[st.mode] * 60
-        st.total = d
-        st.remaining = d
+        st.ends_at = 0.0
+        st.total = dur()
+        st.left = st.total
         status_label.value = "Таймер сброшен."
+        cancel_alarm()
         refresh()
         page.update()
 
@@ -298,11 +440,12 @@ def main(page: ft.Page):
 
     def switch_mode(mode):
         st.running = False
+        st.ends_at = 0.0
         st.mode = mode
-        d = {"focus": st.focus, "short": st.short, "long": st.long}[mode] * 60
-        st.total = d
-        st.remaining = d
+        st.total = dur(mode)
+        st.left = st.total
         status_label.value = f"Режим: {MODES[mode]['title']}. Жми старт."
+        cancel_alarm()
         refresh()
         page.update()
 
@@ -334,12 +477,14 @@ def main(page: ft.Page):
         ft.Row([num_field("long", "Лонг", st.long, 5, 90, set_long), num_field("per_set", "До лонга", st.per_set, 2, 8, set_per)], spacing=8),
         ft.Row([ft.Text("Автостарт отдыха", expand=True), sw_break]),
         ft.Row([ft.Text("Автостарт фокуса", expand=True), sw_focus]),
-        ft.Row([ft.Text("Вибрация/звук", expand=True), sw_sound]),
+        ft.Row([ft.Text("🔊 Звук будильника", expand=True), sw_sound]),
+        ft.Row([ft.Text("📳 Вибрация", expand=True), sw_vibro]),
+        ft.Container(notif_label, padding=ft.Padding.only(top=2)),
     ], spacing=8)
 
     body = ft.Column([
         ft.Container(ft.Row([ft.Text("🍅  POMIDOR", size=18, weight=ft.FontWeight.BOLD), fire_label], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.Padding.only(left=20, right=20, top=16)),
-        ft.Container(ft.Text("4 помидора → большой перерыв • отдых и фокус стартуют сами", size=11, color=MUTED), padding=ft.Padding.only(left=20, right=20)),
+        ft.Container(ft.Text("4 помидора → большой перерыв • будильник сработает даже в фоне", size=11, color=MUTED), padding=ft.Padding.only(left=20, right=20)),
         ft.Container(tab_row, padding=ft.Padding.only(left=16, right=16, top=10)),
         ft.Container(ft.Column([set_label, mode_label, ft.Stack([ft.Container(ring, alignment=ft.Alignment(0, 0), padding=10), ft.Container(title_time, alignment=ft.Alignment(0, 0), padding=ft.Padding.only(top=52))], height=230), dots_label], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER), bgcolor=CARD, border_radius=20, padding=14, margin=ft.Margin.only(left=16, right=16, top=10)),
         ft.Container(main_btn, padding=ft.Padding.only(left=16, right=16, top=10)),
@@ -352,6 +497,7 @@ def main(page: ft.Page):
         try:
             raw = await prefs.get("pomidor_cfg")
             if not isinstance(raw, str):
+                send_cmd(perm=True, check=True)
                 return
             d = json.loads(raw)
             for k in ("focus", "short", "long", "per_set"):
@@ -360,7 +506,7 @@ def main(page: ft.Page):
                         setattr(st, k, max(1, int(d[k])))
                     except:
                         pass
-            for k in ("auto_break", "auto_focus", "sound"):
+            for k in ("auto_break", "auto_focus", "sound", "vibro"):
                 if k in d:
                     setattr(st, k, bool(d[k]))
             for k in ("focus", "short", "long", "per_set"):
@@ -381,19 +527,92 @@ def main(page: ft.Page):
             sw_break.value = st.auto_break
             sw_focus.value = st.auto_focus
             sw_sound.value = st.sound
-            if not st.running:
-                st.total = {"focus": st.focus, "short": st.short, "long": st.long}[st.mode] * 60
-                st.remaining = st.total
+            sw_vibro.value = st.vibro
+
+            # --- восстановление таймера после убийства процесса ---
+            ra = bool(d.get("run_active"))
+            rm = d.get("run_mode") or ""
+            try:
+                re_at = float(d.get("run_ends_at") or 0.0)
+            except:
+                re_at = 0.0
+            try:
+                rl = float(d.get("run_left") or 0.0)
+            except:
+                rl = 0.0
+            try:
+                rt = float(d.get("run_total") or 0.0)
+            except:
+                rt = 0.0
+            if ra and rm in MODES:
+                st.mode = rm
+                st.total = rt if rt > 0 else dur(rm)
+                now = time.time()
+                if re_at > now:
+                    # таймер ещё не дошёл до конца — продолжаем и перевзводим будильник
+                    st.running = True
+                    st.ends_at = re_at
+                    st.left = re_at - now
+                    status_label.value = "Таймер продолжается после перезапуска ▶"
+                    schedule_alarm()
+                else:
+                    # дедлайн прошёл, пока приложение было мертво — досчитываем и будим
+                    st.left = 0
+                    st.running = False
+                    do_finish()
+            elif rl > 0 and rm in MODES:
+                st.mode = rm
+                st.total = rt if rt > 0 else dur(rm)
+                st.left = min(rl, st.total)
+                st.running = False
+                st.ends_at = 0.0
             refresh()
             page.update()
-        except:
-            pass
+            send_cmd(perm=True, check=True)
+        except Exception:
+            send_cmd(perm=True, check=True)
+
+    async def ack_loop():
+        """Читает ack-файл от Dart/Kotlin и показывает статус уведомлений в настройках."""
+        seen = ""
+        while True:
+            await asyncio.sleep(2)
+            try:
+                with open(ACK_FILE, "r", encoding="utf-8") as f:
+                    a = json.load(f)
+                if not isinstance(a, dict):
+                    continue
+                aid = str(a.get("id") or "")
+                if not aid or aid == seen:
+                    continue
+                seen = aid
+                if a.get("ok") is False and a.get("error"):
+                    notif_label.value = f"🔔 Будильник: нативная ошибка — {a.get('error')}"
+                    notif_label.color = "#FF8A80"
+                elif a.get("notif") is False:
+                    notif_label.value = "🔔 Нет разрешения на уведомления — включите Pomidor в настройках Android, чтобы будильник срабатывал в фоне"
+                    notif_label.color = "#FF8A80"
+                elif a.get("notif") is True:
+                    ex = "да" if a.get("exact") else "по возможности"
+                    notif_label.value = f"🔔 Уведомления: разрешены • точный будильник: {ex}"
+                    notif_label.color = MUTED
+                else:
+                    continue
+                refresh()
+                try:
+                    notif_label.update()
+                except Exception:
+                    page.update()
+            except Exception:
+                pass
 
     page.add(ft.Stack([body, overlay], expand=True))
     refresh()
     page.update()
     page.run_task(loop)
     page.run_task(load_prefs)
+    page.run_task(ack_loop)
+
 
 if __name__ == "__main__":
     ft.app(main)
