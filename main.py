@@ -51,7 +51,7 @@ def main(page: ft.Page):
     st = State()
     prefs = page.shared_preferences
     hf = ft.HapticFeedback()
-    page.overlay.append(hf)
+    page.services.append(hf)  # в новом API HapticFeedback — Service, а не визуальный контрол
     st.remaining = st.focus * 60
     st.total = st.remaining
 
@@ -76,7 +76,7 @@ def main(page: ft.Page):
     stat_label = ft.Text("", size=12, color=MUTED)
     status_label = ft.Text("Жми старт • 4 помидора → лонг", size=12, color=MUTED, text_align=ft.TextAlign.CENTER)
     ring = ft.ProgressRing(width=210, height=210, stroke_width=12, color=ACCENT, value=0)
-    main_btn = ft.ElevatedButton("▶   СТАРТ", bgcolor=ACCENT, color="white", height=56)
+    main_btn = ft.Button("▶   СТАРТ", bgcolor=ACCENT, color="white", height=56)
     reset_btn = ft.OutlinedButton("↺  Сброс", height=48, expand=True)
     skip_btn = ft.OutlinedButton("⏭  Пропустить", height=48, expand=True)
 
@@ -148,12 +148,12 @@ def main(page: ft.Page):
     sw_focus.on_change = on_sw_focus
     sw_sound.on_change = on_sw_sound
 
-    overlay = ft.Container(visible=False, bgcolor="#B71C1C", expand=True, opacity=1.0)
+    overlay = ft.Container(visible=False, bgcolor="#B71C1C", opacity=1.0, left=0, top=0, right=0, bottom=0)
     overlay_emoji = ft.Text("🍅", size=110, text_align=ft.TextAlign.CENTER)
     overlay_title = ft.Text("", size=34, weight=ft.FontWeight.BOLD, color="white", text_align=ft.TextAlign.CENTER)
     overlay_sub = ft.Text("", size=16, color="white", text_align=ft.TextAlign.CENTER)
     overlay_state = ft.Text("", size=14, weight=ft.FontWeight.BOLD, color="#FFE082", text_align=ft.TextAlign.CENTER)
-    overlay_btn = ft.ElevatedButton("ПОНЯТНО, ПРОДОЛЖИТЬ  →", height=58)
+    overlay_btn = ft.Button("ПОНЯТНО, ПРОДОЛЖИТЬ  →", height=58)
     overlay_col = ft.Column([overlay_emoji, overlay_title, overlay_sub, overlay_state, ft.Container(height=10), overlay_btn], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8, expand=True)
     overlay.content = ft.Container(overlay_col, padding=24, alignment=ft.Alignment(0, 0))
 
